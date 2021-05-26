@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Flag Simulation</title>
+    <style>
+        body { margin: 0; }
+    </style>
+</head>
+<body>
+<script type="module">
+    import * as THREE from './three.module.js';
+
+    // constants
+    const rest_len = 20
+    const mass = 1;
+    const weight = (new THREE.Vector3(0, -9.8 * 10, 0)).multiplyScalar(mass); // scale g with 10 bc we are using large rl:m
+    let wind = (new THREE.Vector3(0, 0, 0)); // with air resistance
+    const k = 80;
+
+    // threejs stuffs
+    let renderer = new THREE.WebGLRenderer( { antialias: true } );
+    renderer.setPixelRatio( window.devicePixelRatio );
+    renderer.setSize( window.innerWidth, window.innerHeight );
+    renderer.outputEncoding = THREE.sRGBEncoding;
+    renderer.shadowMap.enabled = true;
+    let scene = new THREE.Scene();
+
+    // copied from 28 lines from threejs example, create a scene with background and appropriate lighting
+    scene.background = new THREE.Color( 0xcce0ff );
+    scene.fog = new THREE.Fog( 0xcce0ff, 500, 10000 );
+    let camera = new THREE.PerspectiveCamera( 30, window.innerWidth / window.innerHeight, 1, 10000 );
+    camera.position.setZ( 1000 );
+    const light = new THREE.DirectionalLight( 0x666666, 1 );
+    light.position.set( 50, 200, 149 );
+    light.position.multiplyScalar( 1.3 );
+    light.castShadow = true;
+    light.shadow.mapSize.width = 1024;
+    light.shadow.mapSize.height = 1024;
+    const d = 300;
+    light.shadow.camera.left = - d;
+    light.shadow.camera.right = d;
+    light.shadow.camera.top = d;
+    light.shadow.camera.bottom = - d;
+    light.shadow.camera.far = 1000;
+    scene.add( light );
+    const loader = new THREE.TextureLoader();
+    const groundTexture = loader.load( 'textures/sand.jpg' );
+    groundTexture.wrapS = groundTexture.wrapT = THREE.RepeatWrapping;
+    groundTexture.repeat.set( 25, 25 );
+    groundTexture.anisotropy = 16;
+    groundTexture.encoding = THREE.sRGBEncoding;
+    const groundMaterial = new THREE.MeshLambertMaterial( { map: groundTexture } );
+    let mesh = new THREE.Mesh( new THREE.PlaneGeometry( 20000, 20000 ), groundMaterial );
+    mesh.position.y = - 200;
+    mesh.rotation.x = - Math.PI / 2;
+    mesh.receiveShadow = true;
+    scene.add( mesh );
+    // done
+
+
+    const width = 10;
+    const height = 5;
+    const fixed_index =  [0, height-1] //[height - 1, height * width - 1];
+
+    let vertices = [];
+    let velocity = [];
+    let last_pos = [];
+    let raw_uvs = []; // coordinate on texture for cloth
+
+    // create the cloth
+    function createBlanket(){
+        for (let i = 0; i < width; i++) {
+            for (let j = 0; j < height; j++) {
+                vertices.push(new THREE.Vector3(i*rest_len, j*rest_len+100, -3));
+                raw_uvs.push(new THREE.Vector2(i, j));
+                velocity.push(new THREE.Vector3());
+                last_pos.push(new THREE.Vector3(i*rest_len, j*rest_len+100, -3));
+
+            }
+        }
+    }
+
+
+    createBlanket();
+
+    let uvs = [];
+
+    // util for buffer geometry
+    function pushPoints(orig, arr, index){
+        for (let i = 0; i < arr.length; i++) {
+            orig[index++] = arr[i].x;
+            orig[index++] = arr[i].y;
+            orig[index++] = arr[i].z;
+        }
+        return index;
+    }
+
+    function addColor(orig, color){
+
+    }
+
+    let colors = [];
+    let firstUvSet = true;
+
+    function addUV(idx, should_set){
+        if (should_set){
+            uvs.push(raw_uvs[idx].x/7 - .15, raw_uvs[idx].y/4);
+        }
+    }
+
+    function geomToOrig(points, orig) {
+        let counter = 0;
+        for (let i = 0; i < points.length; i++) {
+            let dirX = whichBoundaryX(i)
+            if (dirX === 'right'){
+                return
+            }
+            let dirY = whichBoundaryY(i)
+            if (dirY){
+                if (dirY === 'bottom') {
+                    let p4 = points[i + height];
+                    let p1 = points[i + 1];
+                    let p0 = points[i];
+                    addUV(i, firstUvSet);
+                    addUV(i+height, firstUvSet);
+                    addUV(i+1, firstUvSet);
+                    counter = pushPoints(orig, [p0, p4, p1], counter, firstUvSet);
+                } else {
+                    let p7 = points[i + height];
+                    let p3 = points[i];
+                    let p6 = points[i + height - 1];
+                    addUV(i, firstUvSet);
+                    addUV(i + height - 1, firstUvSet);
+                    addUV(i + height, firstUvSet);
+
+                    counter = pushPoints(orig, [p3, p6, p7], counter, firstUvSet);
+                }
+
+            } else {
+
+                let p4 = points[i + height];
+                let p1 = points[i + 1];
+                let p0 = points[i];
+                let p7 = points[i + height];
+                let p3 = points[i];
+                let p6 = points[i + height - 1];
+                addUV(i, firstUvSet);
+                addUV(i+height, firstUvSet);
+                addUV(i+1, firstUvSet);
+                addUV(i, firstUvSet);
+                addUV(i + height - 1, firstUvSet);
+                addUV(i + height, firstUvSet);
+                counter = pushPoints(orig, [p0, p4, p1], counter, firstUvSet);
+                counter = pushPoints(orig, [p3, p6, p7], counter, firstUvSet);
+
+            }
+        }
+        if (firstUvSet) firstUvSet = false;
+    }
+
+
+    let geometry = new THREE.BufferGeometry();
+    let orig = [];
+
+    geomToOrig(vertices, orig)
+
+    let varr = new THREE.Float32BufferAttribute( orig, 3 );
+    geometry.setAttribute( 'position', varr );
+    scene.add( new THREE.AmbientLight( 0x555555, 0.8 ) );
+
+    // Add subdivision:
+    // let modifier = new TessellateModifier(2);
+    // geometry = modifier.modify(geometry);
+    // geometry = new THREE.BufferGeometry().fromGeometry(geometry)
+
+    geometry.setAttribute( 'position', new THREE.Float32BufferAttribute( orig, 3 ) );
+    geometry.setAttribute( 'uv', new THREE.Float32BufferAttribute( uvs, 2 ) );
+
+    // light
+    geometry.computeVertexNormals();
+
+    let spotLight = new THREE.SpotLight(0xffffff);
+    spotLight.position.set(600, 600, 600);
+    spotLight.castShadow = true;
+    scene.add(spotLight)
+
+    // cloth
+    const clothTexture =loader.load( 'textures/cali.jpg' );
+    const clothMaterial = new THREE.MeshLambertMaterial({
+        map: clothTexture,
+        side: THREE.DoubleSide, // ensure flag has texture behind
+    });
+    let cloth = new THREE.Mesh(geometry, clothMaterial);
+    cloth.castShadow = true;
+    scene.add( cloth );
+
+    // cylinder
+    const cyn_geometry = new THREE.CylinderGeometry( 5, 5, height * rest_len * 4, 32 );
+    const cylinderTexture =loader.load('textures/mirror.jpg');
+
+    const cyn_material = new THREE.MeshPhongMaterial({
+        color: 0xaaaaaa,
+        specular: 0xffffff,
+        shininess: 10000,
+        side: THREE.DoubleSide
+    });
+
+    const cyn_cylinder = new THREE.Mesh(cyn_geometry, cyn_material);
+    cyn_cylinder.castShadow = true
+    scene.add( cyn_cylinder );
+
+    function whichBoundaryX(index){
+        if (index < height){
+            return "left"
+        }
+        if (index >= height * (width - 1)) {
+            return "right"
+        }
+    }
+
+    function whichBoundaryY(index){
+        if (index % height === 0) {
+            return "bottom"
+        }
+        if (index % height === height - 1) {
+            return "top"
+        }
+    }
+
+    function calculateHooksLaw(a, b, rl=1/height){
+        let dist = b.clone().sub(a);
+        const norm = dist.length();
+        return dist.divideScalar(norm).multiplyScalar(norm - rest_len).multiplyScalar(k);
+    }
+
+    function getPoint(geo, index){
+        return geo[index];
+    }
+
+    function calculateAcc(point, geo, index){
+        let spring = new THREE.Vector3();
+        const dirX = whichBoundaryX(index);
+        const dirY = whichBoundaryY(index);
+        // top = index + 1
+        // bottom = index - 1
+        // left = index - height
+        // right = index + height
+        if (dirX){
+            if (dirX === 'right') {
+                let leftPoint = getPoint(geo, index - height);
+                spring.add(calculateHooksLaw(point, leftPoint, 1/width));
+            } else {
+                let rightPoint = getPoint(geo, index + height)
+                spring.add(calculateHooksLaw(point, rightPoint, 1/width));
+            }
+        } else {
+            let leftPoint = getPoint(geo, index - height);
+            let rightPoint = getPoint(geo, index + height)
+            spring.add(calculateHooksLaw(point, leftPoint, 1/width));
+            spring.add(calculateHooksLaw(point, rightPoint, 1/width));
+        }
+
+        if (dirY){
+            if (dirY === 'bottom') {
+                let topPoint = getPoint(geo, index + 1)
+                spring.add(calculateHooksLaw(point, topPoint));
+            } else {
+                let bottomPoint = getPoint(geo, index - 1)
+                spring.add(calculateHooksLaw(point, bottomPoint));
+            }
+        } else {
+            let topPoint = getPoint(geo, index + 1)
+            spring.add(calculateHooksLaw(point, topPoint));
+            let bottomPoint = getPoint(geo, index - 1)
+            spring.add(calculateHooksLaw(point, bottomPoint));
+        }
+        // console.log(spring)
+        let acc = new THREE.Vector3();
+        acc.copy(weight);
+        acc.add(spring);
+        acc.add(wind);
+        acc.divideScalar(mass);
+        return acc;
+    }
+
+    // hashtable stuffs
+    const tmax = 1000;
+    let hashtable = [];
+
+    function hash_loc(ht, location, acc){
+        let hs = parseInt(location.x/10) * tmax * tmax + parseInt(location.y/10) * tmax + parseInt(location.z/10);
+        if (!ht[hs]){
+            ht[hs] = [new THREE.Vector3(),0];
+        }
+        ht[hs][0].add(acc);
+        ht[hs][1]+=1;
+    }
+
+    function eval_hash(location) {
+        let hs = parseInt(location.x/10) * tmax * tmax + parseInt(location.y/10) * tmax + parseInt(location.z/10);
+        if (hashtable[hs] && hashtable[hs][1] > 2){
+            return hashtable[hs][0].divideScalar(hashtable[hs][1]);
+        }
+        return new THREE.Vector3();
+    }
+
+
+    let dt = 0.015;
+    const damping = 0.05;
+
+    function animate() {
+        let new_ht = [];
+        for (let k = 0; k < 1; k++) {
+            for (let i = 0; i < vertices.length; i++) {
+                if (fixed_index.includes(i)){
+                    continue
+                }
+
+                // Verlet Int
+                let currentPoint = getPoint(vertices, i);
+                let acc = calculateAcc(currentPoint, vertices, i);
+
+                let temp = new THREE.Vector3()
+                temp.copy(currentPoint);
+                acc.add(eval_hash(currentPoint));
+                hash_loc(new_ht, currentPoint, acc)
+
+                acc.multiplyScalar(dt * dt)
+                currentPoint.multiplyScalar(2-damping).sub(last_pos[i].multiplyScalar(1-damping)).add(acc)
+                last_pos[i].copy(temp);
+                temp = null;
+
+                // Euler Int:
+                // acc.multiplyScalar(dt);
+                // velocity[i].add(acc);
+                // let v = new THREE.Vector3()
+                // v.copy(velocity[i]);
+                // currentPoint.add(v.multiplyScalar(dt))
+                geomToOrig(vertices, geometry.attributes.position.array);
+            }
+        }
+
+
+        // Add subdivision:
+        // let newGeo = new THREE.BufferGeometry().fromGeometry(modifier.modify(geometry));
+        // let newGeoPos = newGeo.attributes.position.array;
+        //
+        // for (let i = 0; i < newGeoPos.length; i++) {
+        //     geometry.attributes.position.array[i] = newGeoPos[i];
+        // }
+        hashtable = new_ht;
+        geometry.computeVertexNormals();
+
+        geometry.attributes.position.needsUpdate = true;
+
+        requestAnimationFrame( animate );
+        renderer.render( scene, camera );
+    }
+
+    // Change wind direction after 10s:
+    // setInterval(()=>{
+    //     wind = (new THREE.Vector3(-0.5, 0, 0.5))
+    // }, 1000)
+
+    animate()
+
+    document.body.appendChild( renderer.domElement );
+</script>
+</body>
+</html>
